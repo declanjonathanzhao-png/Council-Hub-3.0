@@ -222,14 +222,20 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         comments: [],
       };
 
-      setUploadProgress(100);
-      setUploadStage('Upload Complete!');
-      await new Promise((r) => setTimeout(r, 150));
+      setUploadProgress(85);
+      setUploadStage('Syncing to Firestore cloud database across all devices...');
+      
+      // Save document to Firestore and update state
+      await onDocumentCreated(newDoc);
 
-      onDocumentCreated(newDoc);
+      setUploadProgress(100);
+      setUploadStage('Upload & Cloud Sync Complete!');
+      await new Promise((r) => setTimeout(r, 200));
+
       onClose();
     } catch (err: any) {
-      setErrorMessage(err.message || 'Upload failed');
+      console.error('Upload Error:', err);
+      setErrorMessage(err.message || 'Upload failed. Please check your internet connection and try again.');
     } finally {
       setIsUploading(false);
     }

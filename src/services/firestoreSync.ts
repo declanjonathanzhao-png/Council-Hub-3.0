@@ -147,8 +147,10 @@ export async function saveDocumentToFirestore(docItem: CouncilDocument) {
 
     const payload = cleanFirestorePayload(rawPayload);
     await setDoc(doc(db, 'documents', docItem.id), payload, { merge: true });
-  } catch (error) {
+    return { success: true };
+  } catch (error: any) {
     handleFirestoreError(error, OperationType.WRITE, `documents/${docItem.id}`);
+    throw error;
   }
 }
 
@@ -559,6 +561,28 @@ export function subscribeToAuditLogs(
 // Ensures that on a fresh cloud database, all council data is populated
 // so all connected devices immediately see and receive identical state!
 // -------------------------------------------------------------
+// -------------------------------------------------------------
+// LOCAL-TO-CLOUD AUTO-RECOVERY & SEED HELPER
+// Automatically rescues any documents uploaded while offline or with serialization errors,
+// ensuring all connected devices immediately receive identical state!
+// -------------------------------------------------------------
+export async function syncLocalDocumentsToFirestore(localDocs: CouncilDocument[]) {
+  if (!Array.isArray(localDocs) || localDocs.length === 0) return;
+  try {
+    const docSnap = await getDocs(collection(db, 'documents'));
+    const remoteDocIds = new Set(docSnap.docs.map((d) => d.id));
+    
+    // Find documents stored locally that don't exist in Firestore yet
+    const missingDocs = localDocs.filter((d) => d && d.id && !remoteDocIds.has(d.id));
+    for (const missing of missingDocs) {
+      console.info(`Syncing local document "${missing.name}" (${missing.id}) to Firestore...`);
+      await saveDocumentToFirestore(missing);
+    }
+  } catch (err) {
+    console.warn('Auto-sync of local documents to Firestore:', err);
+  }
+}
+
 export async function seedFirestoreIfEmpty(
   initialDepts: Department[],
   initialDocs: CouncilDocument[],
@@ -566,7 +590,8 @@ export async function seedFirestoreIfEmpty(
   initialEvents: CouncilEvent[],
   initialAdmins: AdminUser[],
   initialSecurity: SecuritySettings,
-  initialAccess: AccessControlSettings
+  initialAccess: AccessControlSettings,
+  currentLocalDocs?: CouncilDocument[]
 ) {
   try {
     // 1. Check departments - ensure ALL 7 core departments exist in Firestore
@@ -578,11 +603,18 @@ export async function seedFirestoreIfEmpty(
       }
     }
 
-    // 2. Check documents
+    // 2. Check documents & rescue any local unsynced docs
     const docSnap = await getDocs(collection(db, 'documents'));
     if (docSnap.empty && initialDocs.length > 0) {
       for (const d of initialDocs) {
-        await setDoc(doc(db, 'documents', d.id), cleanFirestorePayload(d));
+        await saveDocumentToFirestore(d);
+      }
+    } else if (currentLocalDocs && currentLocalDocs.length > 0) {
+      const existingDocIds = new Set(docSnap.docs.map((d) => d.id));
+      for (const locDoc of currentLocalDocs) {
+        if (locDoc && locDoc.id && !existingDocIds.has(locDoc.id)) {
+          await saveDocumentToFirestore(locDoc);
+        }
       }
     }
 

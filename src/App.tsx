@@ -35,6 +35,7 @@ import {
   deleteDepartmentFromFirestore,
   mergeDepartments,
   seedFirestoreIfEmpty,
+  syncLocalDocumentsToFirestore,
 } from './services/firestoreSync';
 import {
   getSuperAdminEmail,
@@ -242,7 +243,8 @@ export default function App() {
       INITIAL_EVENTS,
       admins,
       securitySettings,
-      getAccessControlSettings()
+      getAccessControlSettings(),
+      documents
     );
   }, []);
 
@@ -251,6 +253,23 @@ export default function App() {
     const unsubDocs = subscribeToDocuments((remoteDocs) => {
       if (remoteDocs) {
         setDocuments(remoteDocs);
+
+        // Auto-heal any locally stored documents that might not be synced to Firestore yet
+        try {
+          const savedLocal = localStorage.getItem('council_documents_v1');
+          if (savedLocal) {
+            const parsedLocal: CouncilDocument[] = JSON.parse(savedLocal);
+            if (Array.isArray(parsedLocal) && parsedLocal.length > 0) {
+              const remoteIds = new Set(remoteDocs.map((d) => d.id));
+              const unsynced = parsedLocal.filter((d) => d && d.id && !remoteIds.has(d.id));
+              if (unsynced.length > 0) {
+                syncLocalDocumentsToFirestore(unsynced);
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
       }
     });
 
@@ -1189,8 +1208,22 @@ export default function App() {
       alert('SC Viewers have view-only access and cannot upload files.');
       return;
     }
-    setDocuments((prev) => [newDoc, ...prev]);
-    await saveDocumentToFirestore(newDoc);
+    
+    // Save to Firestore first so cloud sync is guaranteed
+    try {
+      await saveDocumentToFirestore(newDoc);
+    } catch (err) {
+      console.error('Error saving document to Firestore:', err);
+      throw err;
+    }
+
+    setDocuments((prev) => {
+      if (prev.some((d) => d.id === newDoc.id)) {
+        return prev.map((d) => (d.id === newDoc.id ? newDoc : d));
+      }
+      return [newDoc, ...prev];
+    });
+
     setSelectedDocId(newDoc.id);
     setCurrentView('document_detail');
   };
@@ -1678,6 +1711,7 @@ export default function App() {
       <GoogleDriveBrowserModal
         isOpen={showDriveBrowser}
         onClose={() => setShowDriveBrowser(false)}
+        onImportDocument={handleDocumentCreated}
       />
 
       {/* Google Workspace Sign-In Prompt Modal */}
