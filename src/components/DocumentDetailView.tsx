@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CouncilDocument, ViewType, DocumentComment } from '../types';
+import { loadDocumentFileData } from '../services/firestoreSync';
 
 interface DocumentDetailViewProps {
   document: CouncilDocument;
@@ -36,6 +37,11 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
   const [isIframeLoading, setIsIframeLoading] = useState(true);
   const [iframeError, setIframeError] = useState(false);
 
+  // Dynamic Cloud File Data state for multi-device synchronization
+  const [fileDataUrl, setFileDataUrl] = useState<string | null>(document.fileDataUrl || null);
+  const [isLoadingFileData, setIsLoadingFileData] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(0);
+
   // Derived Google Embed Preview Link if available
   const getGoogleEmbedUrl = () => {
     if (document.driveFileId) {
@@ -62,6 +68,29 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
   };
 
   const googleEmbedUrl = getGoogleEmbedUrl();
+
+  // Multi-user dynamic retrieval: If on a different device or file was chunked, load seamlessly from Firestore
+  useEffect(() => {
+    if (document.fileDataUrl) {
+      setFileDataUrl(document.fileDataUrl);
+      setIsLoadingFileData(false);
+    } else if (!document.content && !googleEmbedUrl) {
+      setIsLoadingFileData(true);
+      setLoadingProgress(15);
+      loadDocumentFileData(document.id, (p) => setLoadingProgress(p))
+        .then((data) => {
+          setFileDataUrl(data);
+          setIsLoadingFileData(false);
+        })
+        .catch((err) => {
+          console.warn('Failed to load file chunks from cloud:', err);
+          setIsLoadingFileData(false);
+        });
+    } else {
+      setFileDataUrl(null);
+      setIsLoadingFileData(false);
+    }
+  }, [document.id, document.fileDataUrl, googleEmbedUrl, document.content]);
 
   const handleSendComment = (e: React.FormEvent) => {
     e.preventDefault();
@@ -324,9 +353,22 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                   )}
                 </div>
               </div>
-            ) : document.fileDataUrl ? (
+            ) : isLoadingFileData ? (
+              <div className="p-12 md:p-16 bg-[#f6f3ec]/50 rounded-2xl border border-[#bec9c5]/40 text-center space-y-4 flex flex-col items-center justify-center">
+                <div className="w-10 h-10 rounded-full border-3 border-[#006054]/20 border-t-[#006054] animate-spin"></div>
+                <div>
+                  <h3 className="font-['Plus_Jakarta_Sans'] font-bold text-base text-[#1c1c18]">Retrieving File from Cloud...</h3>
+                  <p className="text-xs text-[#6e7976] mt-1">Synchronizing shared document across devices</p>
+                </div>
+                {loadingProgress > 0 && (
+                  <div className="w-48 bg-[#e5e2db] h-1.5 rounded-full overflow-hidden">
+                    <div className="bg-[#006054] h-full transition-all duration-300" style={{ width: `${loadingProgress}%` }}></div>
+                  </div>
+                )}
+              </div>
+            ) : fileDataUrl ? (
               <div className="space-y-6">
-                <div className="flex items-center justify-between border-b border-[#e5e2db] pb-4">
+                <div className="flex items-center justify-between border-b border-[#e5e2db] pb-4 flex-wrap gap-3">
                   <div>
                     <h2 className="text-lg font-bold text-[#1c1c18]">{document.name}</h2>
                     <p className="text-xs text-[#6e7976]">Uploaded file: {document.filename} ({document.fileSize})</p>
@@ -334,11 +376,11 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                   <button
                     onClick={() => {
                       const a = window.document.createElement('a');
-                      a.href = document.fileDataUrl!;
+                      a.href = fileDataUrl;
                       a.download = document.filename;
                       a.click();
                     }}
-                    className="px-4 py-2 bg-[#006054] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs"
+                    className="px-4 py-2 bg-[#006054] hover:bg-[#1F7A6C] text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
                   >
                     <span className="material-symbols-outlined text-[16px]">download</span>
                     Download File
@@ -348,7 +390,7 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                 {document.format === 'png' || document.format === 'jpg' || document.format === 'jpeg' ? (
                   <div className="flex justify-center bg-[#f6f3ec]/60 p-4 rounded-2xl border border-[#bec9c5]/40">
                     <img
-                      src={document.fileDataUrl}
+                      src={fileDataUrl}
                       alt={document.name}
                       className="max-h-[600px] object-contain rounded-xl shadow-md"
                       referrerPolicy="no-referrer"
@@ -357,7 +399,7 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                 ) : document.format === 'pdf' ? (
                   <div className="w-full h-[650px] bg-[#f6f3ec]/40 rounded-2xl border border-[#bec9c5]/40 overflow-hidden flex flex-col items-center justify-center">
                     <iframe
-                      src={document.fileDataUrl}
+                      src={fileDataUrl}
                       className="w-full h-full rounded-xl"
                       title={document.name}
                     />
@@ -372,11 +414,11 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                     <button
                       onClick={() => {
                         const a = window.document.createElement('a');
-                        a.href = document.fileDataUrl!;
+                        a.href = fileDataUrl;
                         a.download = document.filename;
                         a.click();
                       }}
-                      className="px-5 py-2.5 bg-[#006054] hover:bg-[#1F7A6C] text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-sm"
+                      className="px-5 py-2.5 bg-[#006054] hover:bg-[#1F7A6C] text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-sm cursor-pointer"
                     >
                       <span className="material-symbols-outlined text-[18px]">download</span>
                       Download & Open File
@@ -482,16 +524,29 @@ export const DocumentDetailView: React.FC<DocumentDetailViewProps> = ({
                 </div>
                 <button
                   onClick={() => {
-                    const blob = new Blob(['Document content for ' + document.name], { type: 'text/plain' });
-                    const url = URL.createObjectURL(blob);
-                    const a = window.document.createElement('a');
-                    a.href = url;
-                    a.download = document.filename;
-                    a.click();
+                    if (fileDataUrl) {
+                      const a = window.document.createElement('a');
+                      a.href = fileDataUrl;
+                      a.download = document.filename;
+                      a.click();
+                    } else {
+                      setIsLoadingFileData(true);
+                      loadDocumentFileData(document.id, (p) => setLoadingProgress(p)).then((d) => {
+                        setFileDataUrl(d);
+                        setIsLoadingFileData(false);
+                        if (d) {
+                          const a = window.document.createElement('a');
+                          a.href = d;
+                          a.download = document.filename;
+                          a.click();
+                        }
+                      });
+                    }
                   }}
-                  className="px-4 py-2 bg-[#006054] text-white rounded-xl text-xs font-bold uppercase tracking-wider"
+                  className="px-5 py-2.5 bg-[#006054] hover:bg-[#1F7A6C] text-white rounded-xl text-xs font-bold inline-flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
                 >
-                  Download {document.fileSize}
+                  <span className="material-symbols-outlined text-[16px]">download</span>
+                  <span>Download File ({document.fileSize})</span>
                 </button>
               </div>
             )}

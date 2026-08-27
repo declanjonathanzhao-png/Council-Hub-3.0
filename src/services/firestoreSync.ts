@@ -4,6 +4,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
   deleteDoc, 
   onSnapshot, 
   getDocs,
@@ -76,25 +77,123 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 }
 
 // -------------------------------------------------------------
-// DOCUMENTS SYNC
+// DOCUMENTS & CLOUD FILE CHUNKING SYNC
+// Allows storing files of any size seamlessly in Firestore
+// so that all connected devices and members can download & view files
 // -------------------------------------------------------------
+export const fileDataMemoryCache = new Map<string, string>();
+const CHUNK_SIZE = 250000; // ~180KB per chunk, fast and safely below Firestore limits
+
 export async function saveDocumentToFirestore(docItem: CouncilDocument) {
   try {
     const payload: any = { ...docItem };
-    // If fileDataUrl is huge (> 800KB string length), omit from single Firestore doc to prevent 1MB document limit error
-    if (payload.fileDataUrl && typeof payload.fileDataUrl === 'string' && payload.fileDataUrl.length > 800000) {
-      console.warn(`File data URL for ${docItem.id} exceeds 800KB; storing metadata and cloud links in Firestore.`);
-      delete payload.fileDataUrl;
+    const rawFileDataUrl = docItem.fileDataUrl;
+
+    if (rawFileDataUrl && typeof rawFileDataUrl === 'string' && rawFileDataUrl.length > 0) {
+      // 1. Cache immediately in memory
+      fileDataMemoryCache.set(docItem.id, rawFileDataUrl);
+
+      // 2. Slice into lightweight Firestore chunks
+      const totalLen = rawFileDataUrl.length;
+      const totalChunks = Math.ceil(totalLen / CHUNK_SIZE);
+      const chunkPromises: Promise<any>[] = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, totalLen);
+        const chunkData = rawFileDataUrl.substring(start, end);
+
+        const chunkRef = doc(db, 'documents', docItem.id, 'chunks', `chunk_${i}`);
+        chunkPromises.push(
+          setDoc(chunkRef, {
+            index: i,
+            totalChunks,
+            data: chunkData,
+            updatedAt: Date.now(),
+          })
+        );
+      }
+
+      await Promise.all(chunkPromises);
+
+      payload.hasCloudBlob = true;
+      payload.chunkCount = totalChunks;
+
+      // Keep root doc compact (< 250KB) to prevent 1MB Firestore document limit errors
+      if (totalLen > 250000) {
+        delete payload.fileDataUrl;
+      }
     }
+
     await setDoc(doc(db, 'documents', docItem.id), payload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `documents/${docItem.id}`);
   }
 }
 
+export async function loadDocumentFileData(
+  docId: string,
+  onProgress?: (progressPercent: number) => void
+): Promise<string | null> {
+  // 1. Return from memory cache if available
+  if (fileDataMemoryCache.has(docId)) {
+    return fileDataMemoryCache.get(docId)!;
+  }
+
+  try {
+    if (onProgress) onProgress(20);
+
+    // 2. Fetch chunks from Firestore subcollection
+    const chunksColl = collection(db, 'documents', docId, 'chunks');
+    const chunksSnap = await getDocs(chunksColl);
+
+    if (!chunksSnap.empty) {
+      if (onProgress) onProgress(60);
+      const rawChunks: { index: number; data: string; totalChunks: number }[] = [];
+      chunksSnap.forEach((c) => {
+        rawChunks.push(c.data() as any);
+      });
+
+      rawChunks.sort((a, b) => a.index - b.index);
+      const assembled = rawChunks.map((c) => c.data).join('');
+
+      if (onProgress) onProgress(100);
+      fileDataMemoryCache.set(docId, assembled);
+      return assembled;
+    }
+
+    // 3. Fallback check on root document
+    const rootSnap = await getDoc(doc(db, 'documents', docId));
+    if (rootSnap.exists()) {
+      const data = rootSnap.data();
+      if (data?.fileDataUrl) {
+        if (onProgress) onProgress(100);
+        fileDataMemoryCache.set(docId, data.fileDataUrl);
+        return data.fileDataUrl;
+      }
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, `documents/${docId}/chunks`);
+  }
+
+  return null;
+}
+
 export async function deleteDocumentFromFirestore(docId: string) {
   try {
+    // 1. Delete all chunks in subcollection
+    try {
+      const chunksColl = collection(db, 'documents', docId, 'chunks');
+      const chunksSnap = await getDocs(chunksColl);
+      const chunkDeletes = chunksSnap.docs.map((d) => deleteDoc(d.ref));
+      await Promise.all(chunkDeletes);
+    } catch {
+      // ignore chunk delete failure
+    }
+
+    // 2. Delete root doc
     await deleteDoc(doc(db, 'documents', docId));
+    fileDataMemoryCache.delete(docId);
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `documents/${docId}`);
   }
@@ -109,7 +208,12 @@ export function subscribeToDocuments(
     (snapshot) => {
       const items: CouncilDocument[] = [];
       snapshot.forEach((d) => {
-        items.push(d.data() as CouncilDocument);
+        const item = d.data() as CouncilDocument;
+        // If we have cached full file data in memory for this doc, attach it
+        if (!item.fileDataUrl && fileDataMemoryCache.has(item.id)) {
+          item.fileDataUrl = fileDataMemoryCache.get(item.id);
+        }
+        items.push(item);
       });
       callback(items);
     },

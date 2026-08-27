@@ -128,6 +128,8 @@ export interface CouncilDocument {
   driveFileId?: string;
   driveWebViewLink?: string;
   fileDataUrl?: string;
+  hasCloudBlob?: boolean;
+  chunkCount?: number;
   content?: {
     title: string;
     subtitle: string;

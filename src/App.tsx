@@ -249,7 +249,7 @@ export default function App() {
   // Firestore real-time sync for documents, tasks, events, and departments across devices
   useEffect(() => {
     const unsubDocs = subscribeToDocuments((remoteDocs) => {
-      if (remoteDocs && remoteDocs.length > 0) {
+      if (remoteDocs) {
         setDocuments(remoteDocs);
       }
     });
@@ -261,7 +261,7 @@ export default function App() {
     });
 
     const unsubEvents = subscribeToEvents((remoteEvents) => {
-      if (remoteEvents && remoteEvents.length > 0) {
+      if (remoteEvents) {
         setEvents(remoteEvents);
       }
     });
