@@ -210,7 +210,7 @@ export const UploadModal: React.FC<UploadModalProps> = ({
         uploadedBy: {
           name: uploaderName,
           initials: uploaderInitials,
-          avatarUrl: user?.photoURL || undefined,
+          avatarUrl: user?.photoURL || '',
           role: guestProfile?.role || (user ? 'Council Administrator' : 'Council Member'),
         },
         uploadDate: 'Just now',

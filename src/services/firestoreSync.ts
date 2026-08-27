@@ -76,6 +76,26 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   console.warn('Firestore Operation:', JSON.stringify(errInfo));
 }
 
+// Deeply removes undefined fields to comply with Firestore serialization constraints
+export function cleanFirestorePayload<T = any>(obj: any): T {
+  if (obj === undefined) {
+    return null as any;
+  }
+  if (obj === null || typeof obj !== 'object') {
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((item) => cleanFirestorePayload(item)) as any;
+  }
+  const cleaned: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      cleaned[key] = cleanFirestorePayload(value);
+    }
+  }
+  return cleaned as T;
+}
+
 // -------------------------------------------------------------
 // DOCUMENTS & CLOUD FILE CHUNKING SYNC
 // Allows storing files of any size seamlessly in Firestore
@@ -86,7 +106,7 @@ const CHUNK_SIZE = 250000; // ~180KB per chunk, fast and safely below Firestore 
 
 export async function saveDocumentToFirestore(docItem: CouncilDocument) {
   try {
-    const payload: any = { ...docItem };
+    const rawPayload: any = { ...docItem };
     const rawFileDataUrl = docItem.fileDataUrl;
 
     if (rawFileDataUrl && typeof rawFileDataUrl === 'string' && rawFileDataUrl.length > 0) {
@@ -116,15 +136,16 @@ export async function saveDocumentToFirestore(docItem: CouncilDocument) {
 
       await Promise.all(chunkPromises);
 
-      payload.hasCloudBlob = true;
-      payload.chunkCount = totalChunks;
+      rawPayload.hasCloudBlob = true;
+      rawPayload.chunkCount = totalChunks;
 
       // Keep root doc compact (< 250KB) to prevent 1MB Firestore document limit errors
       if (totalLen > 250000) {
-        delete payload.fileDataUrl;
+        delete rawPayload.fileDataUrl;
       }
     }
 
+    const payload = cleanFirestorePayload(rawPayload);
     await setDoc(doc(db, 'documents', docItem.id), payload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `documents/${docItem.id}`);
@@ -229,7 +250,7 @@ export function subscribeToDocuments(
 // -------------------------------------------------------------
 export async function saveTaskToFirestore(taskItem: CouncilTask) {
   try {
-    await setDoc(doc(db, 'tasks', taskItem.id), taskItem);
+    await setDoc(doc(db, 'tasks', taskItem.id), cleanFirestorePayload(taskItem));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `tasks/${taskItem.id}`);
   }
@@ -268,7 +289,7 @@ export function subscribeToTasks(
 // -------------------------------------------------------------
 export async function saveEventToFirestore(eventItem: CouncilEvent) {
   try {
-    await setDoc(doc(db, 'events', eventItem.id), eventItem);
+    await setDoc(doc(db, 'events', eventItem.id), cleanFirestorePayload(eventItem));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `events/${eventItem.id}`);
   }
@@ -356,7 +377,7 @@ export async function saveDepartmentToFirestore(deptItem: Department) {
     if (deptItem.badgeImage && typeof deptItem.badgeImage === 'string' && !deptItem.badgeImage.startsWith('data:')) {
       payload.badgeImage = deptItem.badgeImage;
     }
-    await setDoc(doc(db, 'departments', deptItem.id), payload, { merge: true });
+    await setDoc(doc(db, 'departments', deptItem.id), cleanFirestorePayload(payload), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `departments/${deptItem.id}`);
   }
@@ -411,7 +432,7 @@ export function subscribeToDepartments(
 // -------------------------------------------------------------
 export async function saveAdminToFirestore(adminUser: AdminUser) {
   try {
-    await setDoc(doc(db, 'admins', adminUser.id), adminUser);
+    await setDoc(doc(db, 'admins', adminUser.id), cleanFirestorePayload(adminUser));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `admins/${adminUser.id}`);
   }
@@ -450,7 +471,7 @@ export function subscribeToAdmins(
 // -------------------------------------------------------------
 export async function saveSecuritySettingsToFirestore(settings: SecuritySettings) {
   try {
-    await setDoc(doc(db, 'system_settings', 'security'), settings);
+    await setDoc(doc(db, 'system_settings', 'security'), cleanFirestorePayload(settings));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'system_settings/security');
   }
@@ -476,7 +497,7 @@ export function subscribeToSecuritySettings(
 
 export async function saveAccessControlSettingsToFirestore(settings: AccessControlSettings) {
   try {
-    await setDoc(doc(db, 'system_settings', 'access_control'), settings);
+    await setDoc(doc(db, 'system_settings', 'access_control'), cleanFirestorePayload(settings));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'system_settings/access_control');
   }
@@ -505,7 +526,7 @@ export function subscribeToAccessControlSettings(
 // -------------------------------------------------------------
 export async function saveAuditLogToFirestore(logItem: AdminAuditLog) {
   try {
-    await setDoc(doc(db, 'audit_logs', logItem.id), logItem);
+    await setDoc(doc(db, 'audit_logs', logItem.id), cleanFirestorePayload(logItem));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `audit_logs/${logItem.id}`);
   }
@@ -561,7 +582,7 @@ export async function seedFirestoreIfEmpty(
     const docSnap = await getDocs(collection(db, 'documents'));
     if (docSnap.empty && initialDocs.length > 0) {
       for (const d of initialDocs) {
-        await setDoc(doc(db, 'documents', d.id), d);
+        await setDoc(doc(db, 'documents', d.id), cleanFirestorePayload(d));
       }
     }
 
@@ -569,7 +590,7 @@ export async function seedFirestoreIfEmpty(
     const taskSnap = await getDocs(collection(db, 'tasks'));
     if (taskSnap.empty && initialTasks.length > 0) {
       for (const t of initialTasks) {
-        await setDoc(doc(db, 'tasks', t.id), t);
+        await setDoc(doc(db, 'tasks', t.id), cleanFirestorePayload(t));
       }
     }
 
@@ -577,7 +598,7 @@ export async function seedFirestoreIfEmpty(
     const eventSnap = await getDocs(collection(db, 'events'));
     if (eventSnap.empty && initialEvents.length > 0) {
       for (const e of initialEvents) {
-        await setDoc(doc(db, 'events', e.id), e);
+        await setDoc(doc(db, 'events', e.id), cleanFirestorePayload(e));
       }
     }
 
@@ -586,13 +607,13 @@ export async function seedFirestoreIfEmpty(
     const existingAdminIds = new Set(adminSnap.docs.map((a) => a.id));
     for (const a of initialAdmins) {
       if (!existingAdminIds.has(a.id)) {
-        await setDoc(doc(db, 'admins', a.id), a);
+        await setDoc(doc(db, 'admins', a.id), cleanFirestorePayload(a));
       }
     }
 
     // 6. Check security settings
-    await setDoc(doc(db, 'system_settings', 'security'), initialSecurity, { merge: true });
-    await setDoc(doc(db, 'system_settings', 'access_control'), initialAccess, { merge: true });
+    await setDoc(doc(db, 'system_settings', 'security'), cleanFirestorePayload(initialSecurity), { merge: true });
+    await setDoc(doc(db, 'system_settings', 'access_control'), cleanFirestorePayload(initialAccess), { merge: true });
   } catch (err) {
     console.warn('Initial Firestore seed check:', err);
   }
