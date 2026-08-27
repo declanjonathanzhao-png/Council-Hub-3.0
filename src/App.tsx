@@ -73,6 +73,7 @@ import { UploadModal } from './components/UploadModal';
 import { NewFolderModal } from './components/NewFolderModal';
 import { GoogleDriveBrowserModal } from './components/GoogleDriveBrowserModal';
 import { GoogleSignInModal } from './components/GoogleSignInModal';
+import { UserInstructionsModal } from './components/UserInstructionsModal';
 import { SignInScreen } from './components/SignInScreen';
 
 export default function App() {
@@ -80,6 +81,7 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [showSignInModal, setShowSignInModal] = useState(false);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [showUserInstructions, setShowUserInstructions] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [targetFolderDeptId, setTargetFolderDeptId] = useState<string>('dept-exec');
   const [authError, setAuthError] = useState<string | null>(null);
@@ -706,11 +708,12 @@ export default function App() {
     setAuditLogsState(getAuditLogs());
   };
 
-  const handleApproveDocument = (docId: string, comment?: string) => {
+  const handleApproveDocument = async (docId: string, comment?: string) => {
     if (userPermissions.role === 'viewer') {
       alert('SC Viewers have view-only access and cannot approve proposals.');
       return;
     }
+    let updatedDocToSave: CouncilDocument | undefined;
     setDocuments((prev) =>
       prev.map((d) => {
         if (d.id === docId) {
@@ -733,22 +736,27 @@ export default function App() {
                 },
               ]
             : d.comments;
-          return {
+          updatedDocToSave = {
             ...d,
             status: 'APPROVED',
             comments: updatedComments,
           };
+          return updatedDocToSave;
         }
         return d;
       })
     );
+    if (updatedDocToSave) {
+      await saveDocumentToFirestore(updatedDocToSave);
+    }
   };
 
-  const handleRejectDocument = (docId: string, reason?: string) => {
+  const handleRejectDocument = async (docId: string, reason?: string) => {
     if (userPermissions.role === 'viewer') {
       alert('SC Viewers have view-only access and cannot reject proposals.');
       return;
     }
+    let updatedDocToSave: CouncilDocument | undefined;
     setDocuments((prev) =>
       prev.map((d) => {
         if (d.id === docId) {
@@ -771,22 +779,27 @@ export default function App() {
                 },
               ]
             : d.comments;
-          return {
+          updatedDocToSave = {
             ...d,
             status: 'REJECTED',
             comments: updatedComments,
           };
+          return updatedDocToSave;
         }
         return d;
       })
     );
+    if (updatedDocToSave) {
+      await saveDocumentToFirestore(updatedDocToSave);
+    }
   };
 
-  const handleAddComment = (docId: string, commentText: string) => {
+  const handleAddComment = async (docId: string, commentText: string) => {
+    let updatedDocToSave: CouncilDocument | undefined;
     setDocuments((prev) =>
       prev.map((d) => {
         if (d.id === docId) {
-          return {
+          updatedDocToSave = {
             ...d,
             comments: [
               ...(d.comments || []),
@@ -806,13 +819,18 @@ export default function App() {
               },
             ],
           };
+          return updatedDocToSave;
         }
         return d;
       })
     );
+    if (updatedDocToSave) {
+      await saveDocumentToFirestore(updatedDocToSave);
+    }
   };
 
-  const handleAddReply = (docId: string, parentCommentId: string, replyText: string) => {
+  const handleAddReply = async (docId: string, parentCommentId: string, replyText: string) => {
+    let updatedDocToSave: CouncilDocument | undefined;
     setDocuments((prev) =>
       prev.map((d) => {
         if (d.id === docId) {
@@ -839,14 +857,18 @@ export default function App() {
             }
             return c;
           });
-          return {
+          updatedDocToSave = {
             ...d,
             comments: updatedComments,
           };
+          return updatedDocToSave;
         }
         return d;
       })
     );
+    if (updatedDocToSave) {
+      await saveDocumentToFirestore(updatedDocToSave);
+    }
   };
 
   const handleToggleTaskStatus = async (taskId: string) => {
@@ -1015,19 +1037,29 @@ export default function App() {
     }
 
     if (deleteFiles) {
+      const toDelete = documents.filter((doc) => doc.departmentId === deptId && doc.folder === folderName);
       setDocuments((prev) =>
         prev.filter((doc) => !(doc.departmentId === deptId && doc.folder === folderName))
       );
+      for (const d of toDelete) {
+        await deleteDocumentFromFirestore(d.id);
+      }
     } else {
+      const toUpdate: CouncilDocument[] = [];
       setDocuments((prev) =>
         prev.map((doc) => {
           if (doc.departmentId === deptId && doc.folder === folderName) {
             const { folder, ...rest } = doc;
-            return { ...rest };
+            const updated = { ...rest };
+            toUpdate.push(updated as CouncilDocument);
+            return updated;
           }
           return doc;
         })
       );
+      for (const d of toUpdate) {
+        await saveDocumentToFirestore(d);
+      }
     }
 
     logAuditEvent({
@@ -1048,26 +1080,37 @@ export default function App() {
     }
   };
 
-  const handleMoveDocument = (docId: string, targetFolderName: string) => {
+  const handleMoveDocument = async (docId: string, targetFolderName: string) => {
+    let movedDoc: CouncilDocument | undefined;
     setDocuments((prev) =>
       prev.map((doc) => {
         if (doc.id === docId) {
-          return { ...doc, folder: targetFolderName };
+          movedDoc = { ...doc, folder: targetFolderName };
+          return movedDoc;
         }
         return doc;
       })
     );
+    if (movedDoc) {
+      await saveDocumentToFirestore(movedDoc);
+    }
   };
 
-  const handleMoveMultipleDocuments = (docIds: string[], targetFolderName: string) => {
+  const handleMoveMultipleDocuments = async (docIds: string[], targetFolderName: string) => {
+    const movedDocs: CouncilDocument[] = [];
     setDocuments((prev) =>
       prev.map((doc) => {
         if (docIds.includes(doc.id)) {
-          return { ...doc, folder: targetFolderName };
+          const updated = { ...doc, folder: targetFolderName };
+          movedDocs.push(updated);
+          return updated;
         }
         return doc;
       })
     );
+    for (const d of movedDocs) {
+      await saveDocumentToFirestore(d);
+    }
   };
 
   // GUARDED DOCUMENT DELETION
@@ -1644,6 +1687,30 @@ export default function App() {
         onLogin={handleLogin}
         isLoggingIn={isLoggingIn}
       />
+
+      {/* User Instructions Modal */}
+      <UserInstructionsModal
+        isOpen={showUserInstructions}
+        onClose={() => setShowUserInstructions(false)}
+      />
+
+      {/* Floating User Instructions Button Bottom Right */}
+      <div className="fixed bottom-20 md:bottom-6 right-4 md:right-6 z-40">
+        <button
+          id="user-instructions-floating-btn"
+          onClick={() => setShowUserInstructions(true)}
+          className="flex items-center gap-2 px-3.5 py-2.5 bg-[#006054] hover:bg-[#1F7A6C] text-white rounded-full shadow-lg hover:shadow-xl border border-white/20 transition-all duration-200 hover:scale-105 active:scale-95 group cursor-pointer"
+          title="Open User Instructions & Guide"
+          aria-label="User Instructions"
+        >
+          <span className="material-symbols-outlined text-[20px] group-hover:rotate-12 transition-transform">
+            menu_book
+          </span>
+          <span className="text-xs font-bold font-['Plus_Jakarta_Sans'] tracking-wide">
+            Instructions
+          </span>
+        </button>
+      </div>
 
       {/* Mobile Bottom Navigation Bar */}
       <BottomNav

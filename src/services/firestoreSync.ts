@@ -23,7 +23,9 @@ import {
 } from '../types';
 
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app);
+export const db = (firebaseConfig as any).firestoreDatabaseId 
+  ? getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
+  : getFirestore(app);
 
 // Test server connectivity on startup as per skill instructions
 export async function testFirestoreConnection() {
@@ -78,7 +80,13 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
 // -------------------------------------------------------------
 export async function saveDocumentToFirestore(docItem: CouncilDocument) {
   try {
-    await setDoc(doc(db, 'documents', docItem.id), docItem);
+    const payload: any = { ...docItem };
+    // If fileDataUrl is huge (> 800KB string length), omit from single Firestore doc to prevent 1MB document limit error
+    if (payload.fileDataUrl && typeof payload.fileDataUrl === 'string' && payload.fileDataUrl.length > 800000) {
+      console.warn(`File data URL for ${docItem.id} exceeds 800KB; storing metadata and cloud links in Firestore.`);
+      delete payload.fileDataUrl;
+    }
+    await setDoc(doc(db, 'documents', docItem.id), payload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `documents/${docItem.id}`);
   }
