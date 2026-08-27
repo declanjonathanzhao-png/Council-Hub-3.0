@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper to check authentication
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Collection: Council Departments
+    match /departments/{departmentId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Collection: Council Documents & Proposals
+    match /council_documents/{documentId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    // Collection: Council Tasks & Action Items
+    match /tasks/{taskId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Collection: Calendar Events & Meetings
+    match /events/{eventId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Collection: Admin & Executive Users
+    match /admins/{adminId} {
+      allow read: if true;
+      allow create, update, delete: if true;
+    }
+
+    // Collection: System & Security Settings
+    match /system_settings/{settingId} {
+      allow read: if true;
+      allow create, update: if true;
+      allow delete: if true;
+    }
+
+    // Collection: Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow create: if true;
+      allow update, delete: if true;
+    }
+
+    // Fallback rule for any other collection
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
