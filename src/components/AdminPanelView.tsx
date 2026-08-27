@@ -1221,18 +1221,27 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                           setEditDeptFoldersText(dept.folders.join(', '));
                         }}
                         className="p-1.5 text-[#5D4037] hover:text-[#006054] hover:bg-[#f6f3ec] rounded-lg transition-colors cursor-pointer"
-                        title="Edit Department"
+                        title="Edit Department Folders & Name"
                       >
                         <span className="material-symbols-outlined text-[18px]">edit</span>
                       </button>
 
-                      <button
-                        onClick={() => setDeptToDelete(dept)}
-                        className="p-1.5 text-[#5D4037] hover:text-[#ba1a1a] hover:bg-[#ffdad6] rounded-lg transition-colors cursor-pointer"
-                        title="Delete Department"
-                      >
-                        <span className="material-symbols-outlined text-[18px]">delete</span>
-                      </button>
+                      {['dept-exec', 'dept-house', 'dept-prefect', 'dept-welfare', 'dept-via', 'dept-media', 'dept-tech'].includes(dept.id) ? (
+                        <span 
+                          className="px-2 py-0.5 rounded-full bg-[#006054]/10 text-[#006054] text-[10px] font-bold tracking-wider uppercase"
+                          title="Core Council Department (Protected)"
+                        >
+                          Core Board
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setDeptToDelete(dept)}
+                          className="p-1.5 text-[#5D4037] hover:text-[#ba1a1a] hover:bg-[#ffdad6] rounded-lg transition-colors cursor-pointer"
+                          title="Delete Department"
+                        >
+                          <span className="material-symbols-outlined text-[18px]">delete</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 

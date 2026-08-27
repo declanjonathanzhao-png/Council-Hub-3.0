@@ -191,18 +191,83 @@ export function subscribeToEvents(
 }
 
 // -------------------------------------------------------------
-// DEPARTMENTS SYNC
+// DEPARTMENTS SYNC & MERGE ENGINE
+// Guarantees all main council departments never get deleted or lost
 // -------------------------------------------------------------
+export function mergeDepartments(baseDepts: Department[], remoteDepts: Department[]): Department[] {
+  const deptMap = new Map<string, Department>();
+
+  // 1. Seed with base departments (ensures all 7 core departments are always present with logos)
+  baseDepts.forEach((d) => {
+    deptMap.set(d.id, {
+      ...d,
+      folders: [...(d.folders || [])],
+    });
+  });
+
+  // 2. Overlay remote or saved departments
+  if (Array.isArray(remoteDepts)) {
+    remoteDepts.forEach((r) => {
+      if (!r || !r.id) return;
+      const existing = deptMap.get(r.id);
+      if (existing) {
+        deptMap.set(r.id, {
+          ...existing,
+          ...r,
+          // Preserve local badge image asset if remote doesn't have it or if it's base
+          badgeImage: r.badgeImage || existing.badgeImage,
+          folders: Array.isArray(r.folders) ? r.folders : existing.folders,
+        });
+      } else {
+        deptMap.set(r.id, {
+          ...r,
+          folders: Array.isArray(r.folders) ? r.folders : [],
+        });
+      }
+    });
+  }
+
+  return Array.from(deptMap.values());
+}
+
 export async function saveDepartmentToFirestore(deptItem: Department) {
   try {
-    await setDoc(doc(db, 'departments', deptItem.id), deptItem);
+    const payload: Partial<Department> = {
+      id: deptItem.id,
+      name: deptItem.name,
+      slug: deptItem.slug,
+      iconName: deptItem.iconName,
+      memberCount: deptItem.memberCount || 4,
+      activeFileCount: deptItem.activeFileCount || 0,
+      folders: deptItem.folders || [],
+    };
+    if (deptItem.badgeImage && typeof deptItem.badgeImage === 'string' && !deptItem.badgeImage.startsWith('data:')) {
+      payload.badgeImage = deptItem.badgeImage;
+    }
+    await setDoc(doc(db, 'departments', deptItem.id), payload, { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `departments/${deptItem.id}`);
   }
 }
 
+export async function saveAllDepartmentsToFirestore(departmentsList: Department[]) {
+  try {
+    for (const d of departmentsList) {
+      await saveDepartmentToFirestore(d);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, 'departments/bulk');
+  }
+}
+
 export async function deleteDepartmentFromFirestore(deptId: string) {
   try {
+    // Prevent deletion of base 7 departments in Firestore
+    const baseDeptIds = ['dept-exec', 'dept-house', 'dept-prefect', 'dept-welfare', 'dept-via', 'dept-media', 'dept-tech'];
+    if (baseDeptIds.includes(deptId)) {
+      console.warn('Cannot delete core council department from Firestore:', deptId);
+      return;
+    }
     await deleteDoc(doc(db, 'departments', deptId));
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `departments/${deptId}`);
@@ -371,17 +436,18 @@ export async function seedFirestoreIfEmpty(
   initialAccess: AccessControlSettings
 ) {
   try {
-    // 1. Check departments
+    // 1. Check departments - ensure ALL 7 core departments exist in Firestore
     const deptSnap = await getDocs(collection(db, 'departments'));
-    if (deptSnap.empty) {
-      for (const d of initialDepts) {
-        await setDoc(doc(db, 'departments', d.id), d);
+    const existingDeptIds = new Set(deptSnap.docs.map((d) => d.id));
+    for (const d of initialDepts) {
+      if (!existingDeptIds.has(d.id)) {
+        await saveDepartmentToFirestore(d);
       }
     }
 
     // 2. Check documents
     const docSnap = await getDocs(collection(db, 'documents'));
-    if (docSnap.empty) {
+    if (docSnap.empty && initialDocs.length > 0) {
       for (const d of initialDocs) {
         await setDoc(doc(db, 'documents', d.id), d);
       }
@@ -389,7 +455,7 @@ export async function seedFirestoreIfEmpty(
 
     // 3. Check tasks
     const taskSnap = await getDocs(collection(db, 'tasks'));
-    if (taskSnap.empty) {
+    if (taskSnap.empty && initialTasks.length > 0) {
       for (const t of initialTasks) {
         await setDoc(doc(db, 'tasks', t.id), t);
       }
@@ -397,7 +463,7 @@ export async function seedFirestoreIfEmpty(
 
     // 4. Check events
     const eventSnap = await getDocs(collection(db, 'events'));
-    if (eventSnap.empty) {
+    if (eventSnap.empty && initialEvents.length > 0) {
       for (const e of initialEvents) {
         await setDoc(doc(db, 'events', e.id), e);
       }
@@ -405,8 +471,9 @@ export async function seedFirestoreIfEmpty(
 
     // 5. Check admins
     const adminSnap = await getDocs(collection(db, 'admins'));
-    if (adminSnap.empty) {
-      for (const a of initialAdmins) {
+    const existingAdminIds = new Set(adminSnap.docs.map((a) => a.id));
+    for (const a of initialAdmins) {
+      if (!existingAdminIds.has(a.id)) {
         await setDoc(doc(db, 'admins', a.id), a);
       }
     }

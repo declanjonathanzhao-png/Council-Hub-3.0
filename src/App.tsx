@@ -32,6 +32,9 @@ import {
   deleteEventFromFirestore,
   subscribeToDepartments,
   saveDepartmentToFirestore,
+  deleteDepartmentFromFirestore,
+  mergeDepartments,
+  seedFirestoreIfEmpty,
 } from './services/firestoreSync';
 import {
   getSuperAdminEmail,
@@ -128,7 +131,10 @@ export default function App() {
     try {
       const saved = localStorage.getItem('council_departments_v3');
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return mergeDepartments(INITIAL_DEPARTMENTS, parsed);
+        }
       }
     } catch (e) {
       console.warn('Failed to load departments from localStorage:', e);
@@ -225,6 +231,19 @@ export default function App() {
     };
   }, []);
 
+  // Initial Firestore Cloud Seed (ensures all 7 core departments and settings exist in Firestore)
+  useEffect(() => {
+    seedFirestoreIfEmpty(
+      INITIAL_DEPARTMENTS,
+      INITIAL_DOCUMENTS,
+      INITIAL_TASKS,
+      INITIAL_EVENTS,
+      admins,
+      securitySettings,
+      getAccessControlSettings()
+    );
+  }, []);
+
   // Firestore real-time sync for documents, tasks, events, and departments across devices
   useEffect(() => {
     const unsubDocs = subscribeToDocuments((remoteDocs) => {
@@ -246,8 +265,16 @@ export default function App() {
     });
 
     const unsubDepts = subscribeToDepartments((remoteDepts) => {
-      if (remoteDepts && remoteDepts.length > 0) {
-        setDepartments(remoteDepts);
+      if (remoteDepts) {
+        setDepartments((prev) => {
+          const merged = mergeDepartments(INITIAL_DEPARTMENTS, remoteDepts);
+          try {
+            localStorage.setItem('council_departments_v3', JSON.stringify(merged));
+          } catch (e) {
+            console.warn('Failed to save merged departments:', e);
+          }
+          return merged;
+        });
       }
     });
 
@@ -592,7 +619,7 @@ export default function App() {
     setAuditLogsState(getAuditLogs());
   };
 
-  const handleCreateDepartmentAction = (dept: Omit<Department, 'id' | 'memberCount' | 'activeFileCount'>) => {
+  const handleCreateDepartmentAction = async (dept: Omit<Department, 'id' | 'memberCount' | 'activeFileCount'>) => {
     const newDept: Department = {
       ...dept,
       id: `dept-${Date.now()}`,
@@ -600,13 +627,16 @@ export default function App() {
       memberCount: 4,
       activeFileCount: 0,
     };
-    const updated = [...departments, newDept];
-    setDepartments(updated);
-    try {
-      localStorage.setItem('council_departments_v3', JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Failed to save departments:', e);
-    }
+    setDepartments((prev) => {
+      const updated = mergeDepartments(INITIAL_DEPARTMENTS, [...prev, newDept]);
+      try {
+        localStorage.setItem('council_departments_v3', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to save departments:', e);
+      }
+      return updated;
+    });
+    await saveDepartmentToFirestore(newDept);
     logAuditEvent({
       action: 'CREATE_DEPARTMENT',
       actorName: actor.name,
@@ -618,13 +648,25 @@ export default function App() {
     setAuditLogsState(getAuditLogs());
   };
 
-  const handleUpdateDepartmentAction = (deptId: string, updates: Partial<Department>) => {
-    const updated = departments.map((d) => (d.id === deptId ? { ...d, ...updates } : d));
-    setDepartments(updated);
-    try {
-      localStorage.setItem('council_departments_v3', JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Failed to save departments:', e);
+  const handleUpdateDepartmentAction = async (deptId: string, updates: Partial<Department>) => {
+    let updatedDept: Department | undefined;
+    setDepartments((prev) => {
+      const updated = prev.map((d) => {
+        if (d.id === deptId) {
+          updatedDept = { ...d, ...updates };
+          return updatedDept;
+        }
+        return d;
+      });
+      try {
+        localStorage.setItem('council_departments_v3', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to save departments:', e);
+      }
+      return updated;
+    });
+    if (updatedDept) {
+      await saveDepartmentToFirestore(updatedDept);
     }
     logAuditEvent({
       action: 'UPDATE_DEPARTMENT',
@@ -636,15 +678,23 @@ export default function App() {
     setAuditLogsState(getAuditLogs());
   };
 
-  const handleDeleteDepartmentAction = (deptId: string) => {
-    const dept = departments.find((d) => d.id === deptId);
-    const updated = departments.filter((d) => d.id !== deptId);
-    setDepartments(updated);
-    try {
-      localStorage.setItem('council_departments_v3', JSON.stringify(updated));
-    } catch (e) {
-      console.warn('Failed to save departments:', e);
+  const handleDeleteDepartmentAction = async (deptId: string) => {
+    const baseDeptIds = ['dept-exec', 'dept-house', 'dept-prefect', 'dept-welfare', 'dept-via', 'dept-media', 'dept-tech'];
+    if (baseDeptIds.includes(deptId)) {
+      alert('Core student council departments cannot be deleted.');
+      return;
     }
+    const dept = departments.find((d) => d.id === deptId);
+    setDepartments((prev) => {
+      const updated = prev.filter((d) => d.id !== deptId);
+      try {
+        localStorage.setItem('council_departments_v3', JSON.stringify(updated));
+      } catch (e) {
+        console.warn('Failed to save departments:', e);
+      }
+      return updated;
+    });
+    await deleteDepartmentFromFirestore(deptId);
     logAuditEvent({
       action: 'DELETE_DEPARTMENT',
       actorName: actor.name,
@@ -840,22 +890,26 @@ export default function App() {
   };
 
   const handleCreateFolder = async (deptId: string, folderName: string) => {
+    const trimmed = folderName.trim();
+    if (!trimmed) return;
     if (userPermissions.role === 'viewer' || !userPermissions.canCreateFolders) {
       alert('SC Viewers have view-only access and cannot create folders.');
       return;
     }
     let updatedDeptToSave: Department | undefined;
     setDepartments((prev) => {
-      const updated = prev.map((d) => {
+      const base = mergeDepartments(INITIAL_DEPARTMENTS, prev);
+      const updated = base.map((d) => {
         if (d.id === deptId) {
-          const currentFolders = d.folders || [];
-          if (!currentFolders.includes(folderName)) {
+          const currentFolders = Array.isArray(d.folders) ? d.folders : [];
+          if (!currentFolders.includes(trimmed)) {
             updatedDeptToSave = {
               ...d,
-              folders: [...currentFolders, folderName],
+              folders: [...currentFolders, trimmed],
             };
             return updatedDeptToSave;
           }
+          return d;
         }
         return d;
       });
@@ -870,19 +924,22 @@ export default function App() {
       await saveDepartmentToFirestore(updatedDeptToSave);
     }
     setSelectedDepartmentId(deptId);
-    setSelectedFolderName(folderName);
+    setSelectedFolderName(trimmed);
     setCurrentView('folder_view');
   };
 
   const handleRenameFolder = async (deptId: string, oldName: string, newName: string) => {
+    const trimmedNew = newName.trim();
+    if (!trimmedNew) return;
     let updatedDeptToSave: Department | undefined;
     setDepartments((prev) => {
-      const updated = prev.map((d) => {
+      const base = mergeDepartments(INITIAL_DEPARTMENTS, prev);
+      const updated = base.map((d) => {
         if (d.id === deptId) {
-          const currentFolders = d.folders || [];
+          const currentFolders = Array.isArray(d.folders) ? d.folders : [];
           updatedDeptToSave = {
             ...d,
-            folders: currentFolders.map((f) => (f === oldName ? newName : f)),
+            folders: currentFolders.map((f) => (f === oldName ? trimmedNew : f)),
           };
           return updatedDeptToSave;
         }
@@ -902,14 +959,14 @@ export default function App() {
     setDocuments((prev) =>
       prev.map((doc) => {
         if (doc.departmentId === deptId && doc.folder === oldName) {
-          return { ...doc, folder: newName };
+          return { ...doc, folder: trimmedNew };
         }
         return doc;
       })
     );
 
     if (selectedFolderName === oldName) {
-      setSelectedFolderName(newName);
+      setSelectedFolderName(trimmedNew);
     }
   };
 
@@ -930,9 +987,10 @@ export default function App() {
     let remainingFirstFolder = '';
     let updatedDeptToSave: Department | undefined;
     setDepartments((prev) => {
-      const updated = prev.map((d) => {
+      const base = mergeDepartments(INITIAL_DEPARTMENTS, prev);
+      const updated = base.map((d) => {
         if (d.id === deptId) {
-          const filteredFolders = (d.folders || []).filter((f) => f !== folderName);
+          const filteredFolders = (Array.isArray(d.folders) ? d.folders : []).filter((f) => f !== folderName);
           if (filteredFolders.length > 0) {
             remainingFirstFolder = filteredFolders[0];
           }
